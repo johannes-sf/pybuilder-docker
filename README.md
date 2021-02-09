@@ -1,3 +1,7 @@
+A fork of the original project with some changes to keep up with the latest pybuilder.
+
+
+
 # pybuilder-docker
 A pybuilder plugin that stages a python package into a docker container and optionally publishes it to a registry.
 
