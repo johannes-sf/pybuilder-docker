@@ -4,11 +4,14 @@ import os
 import random
 import shutil
 import string
+import pybuilder.pip_utils as pip_utils
 
 from pybuilder.core import Logger, Project, depends, after
 from pybuilder.core import task
 from pybuilder.pluginhelper.external_command import ExternalCommandBuilder
 from pybuilder.utils import assert_can_execute
+from pybuilder.reactor import Reactor
+
 
 DOCKER_IMAGE_TEMPLATE = string.Template("""
 FROM ${build_image}
@@ -33,7 +36,7 @@ def do_docker_package(project, logger):
     project.set_property_if_unset("docker_package_build_version", project.version)
     report_dir = prepare_reports_directory(project)
     dist_dir = prepare_dist_directory(project)
-    assert_can_execute(["docker", "--version"], prerequisite="docker", caller="docker_package")
+    assert_can_execute(["docker", "--version"], prerequisite="docker", caller="docker_package", env=None)
     # is true if user set verbose in build.py or from command line
     verbose = project.get_property("verbose")
     project.set_property_if_unset("docker_package_verbose_output", verbose)
@@ -41,7 +44,7 @@ def do_docker_package(project, logger):
     build_img = get_build_img(project)
     logger.info("Executing primary stage docker build for image - {}.".format(build_img))
     # docker build --build-arg buildVersion=${BUILD_NUMBER} -t ${BUILD_IMG} src/
-    command = ExternalCommandBuilder('docker', project)
+    command = ExternalCommandBuilder('docker', project, Reactor.current_instance())
     command.use_argument('build')
     command.use_argument('--build-arg')
     command.use_argument('buildVersion={0}').formatted_with_property('docker_package_build_version')
@@ -55,7 +58,7 @@ def do_docker_package(project, logger):
     write_docker_build_file(project=project, logger=logger, build_image=temp_build_img, dist_dir=dist_dir)
     copy_dist_file(project=project, dist_dir=dist_dir, logger=logger)
     logger.info("Executing secondary stage docker build for image - {}.".format(build_img))
-    command = ExternalCommandBuilder('docker', project)
+    command = ExternalCommandBuilder('docker', project, Reactor.current_instance())
     command.use_argument('build')
     command.use_argument('-t')
     command.use_argument('{0}').formatted_with(build_img)
@@ -78,7 +81,7 @@ def docker_push(project, logger):
 
 
 def _ecr_login(project, registry):
-    command = ExternalCommandBuilder('aws', project)
+    command = ExternalCommandBuilder('aws', project, Reactor.current_instance())
     command.use_argument('ecr')
     command.use_argument('get-authorization-token')
     command.use_argument('--output')
@@ -90,7 +93,7 @@ def _ecr_login(project, registry):
         raise Exception("Error getting token")
     pass_token = base64.b64decode(res.report_lines[0])
     split = pass_token.split(":")
-    command = ExternalCommandBuilder('docker', project)
+    command = ExternalCommandBuilder('docker', project, Reactor.current_instance())
     command.use_argument('login')
     command.use_argument('-u')
     command.use_argument('{0}').formatted_with(split[0])
@@ -112,14 +115,14 @@ def _prep_ecr(project, fq_artifact, registry):
 
 
 def _create_ecr_registry(fq_artifact, project):
-    command = ExternalCommandBuilder('aws', project)
+    command = ExternalCommandBuilder('aws', project, Reactor.current_instance())
     command.use_argument('ecr')
     command.use_argument('describe-repositories')
     command.use_argument('--repository-names')
     command.use_argument('{0}').formatted_with(fq_artifact)
     res = command.run("{}/{}".format(prepare_reports_directory(project), 'docker_ecr_registry_discover'))
     if res.exit_code > 0:
-        command = ExternalCommandBuilder('aws', project)
+        command = ExternalCommandBuilder('aws', project, Reactor.current_instance())
         command.use_argument('ecr')
         command.use_argument('create-repository')
         command.use_argument('--repository-name')
@@ -159,7 +162,7 @@ def generate_artifact_manifest(project, registry_path):
 def _run_tag_cmd(project, local_img, remote_img, logger):
     logger.info("Tagging local docker image {} - {}".format(local_img, remote_img))
     report_dir = prepare_reports_directory(project)
-    command = ExternalCommandBuilder('docker', project)
+    command = ExternalCommandBuilder('docker', project, Reactor.current_instance())
     command.use_argument('tag')
     command.use_argument('{0}').formatted_with(local_img)
     command.use_argument('{0}').formatted_with(remote_img)
@@ -169,7 +172,7 @@ def _run_tag_cmd(project, local_img, remote_img, logger):
 def _run_push_cmd(project, remote_img, logger):
     logger.info("Pushing remote docker image - {}".format(remote_img))
     report_dir = prepare_reports_directory(project)
-    command = ExternalCommandBuilder('docker', project)
+    command = ExternalCommandBuilder('docker', project, Reactor.current_instance())
     command.use_argument('push')
     command.use_argument('{0}').formatted_with(remote_img)
     res = command.run("{}/{}".format(report_dir, 'docker_push_tag'))
@@ -202,7 +205,8 @@ def render_docker_buildfile(project, build_image):
     # type: (Project, str) -> str
 
     dist_file = get_dist_file(project)
-    default_package_cmd = "pip install {}".format(dist_file)
+    install_options = pip_utils.build_pip_install_options(extra_index_url=project.get_property("install_dependencies_extra_index_url"))
+    default_package_cmd = "pip install "+" ".join(install_options)+" {} ".format(dist_file)
     template_values = {
         "build_image": build_image,
         "dist_file": dist_file,
